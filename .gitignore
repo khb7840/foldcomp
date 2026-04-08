@@ -9,6 +9,8 @@ dist/
 
 # Test files
 test/out
+test/*.fcz
+test/*.cif
 test/dir_test_input_fcz
 test/tar_test_input.tar_fcz
 test/gz_test_input.tar.gz_fcz

@@ -50,6 +50,27 @@ assert_rmsd_at_most() {
     }'
 }
 
+assert_nonempty_file() {
+  local path=$1
+  [ -s "$path" ]
+}
+
+assert_fasta_headers_at_least() {
+  local path=$1
+  local min_count=$2
+  local actual
+  actual=$(grep -c '^>' "$path")
+  [ "$actual" -ge "$min_count" ]
+}
+
+assert_file_count_at_least() {
+  local path=$1
+  local min_count=$2
+  local actual
+  actual=$(find "$path" -maxdepth 1 -type f | wc -l)
+  [ "$actual" -ge "$min_count" ]
+}
+
 run_reference_cases() {
   rm -f "$TEST_DIR/test.fcz" "$TEST_DIR/test_fcz.cif" "$TEST_DIR/test.cif.fcz" "$TEST_DIR/test.cif_fcz.cif"
 
@@ -83,6 +104,75 @@ run_regression_case() {
   assert_rmsd_at_most "$source" "${max_base}.cif" "$max_spill_bb" "$max_spill_aa"
 }
 
+run_legacy_db_compatibility() {
+  local db="$TEST_DIR/example_db"
+  local out_dir="${TMP_ROOT}/foldcomp-smoke-legacy-db-out"
+  local fasta_out="${TMP_ROOT}/foldcomp-smoke-legacy-db.fasta"
+  local plddt_out="${TMP_ROOT}/foldcomp-smoke-legacy-db.plddt"
+  local expected
+
+  expected=$(wc -l < "$TEST_DIR/example_db.lookup")
+  rm -rf "$out_dir" "$fasta_out" "$plddt_out"
+  mkdir -p "$out_dir"
+
+  "$FOLDCOMP_BIN" check "$db"
+  "$FOLDCOMP_BIN" decompress -t 4 "$db" "$out_dir"
+  "$FOLDCOMP_BIN" extract --fasta "$db" "$fasta_out"
+  "$FOLDCOMP_BIN" extract --plddt "$db" "$plddt_out"
+
+  assert_file_count_at_least "$out_dir" "$expected"
+  assert_nonempty_file "$fasta_out"
+  assert_nonempty_file "$plddt_out"
+  assert_fasta_headers_at_least "$fasta_out" "$expected"
+  assert_fasta_headers_at_least "$plddt_out" "$expected"
+}
+
+run_fragment_db_compatibility() {
+  local input_dir="$TEST_DIR/dir_test_input"
+  local db="${TMP_ROOT}/foldcomp-smoke-fragment-db"
+  local out_dir="${TMP_ROOT}/foldcomp-smoke-fragment-db-out"
+  local fasta_out="${TMP_ROOT}/foldcomp-smoke-fragment-db.fasta"
+  local plddt_out="${TMP_ROOT}/foldcomp-smoke-fragment-db.plddt"
+
+  rm -rf "$db" "${db}.dbtype" "${db}.index" "${db}.lookup" "$out_dir" "$fasta_out" "$plddt_out"
+  mkdir -p "$out_dir"
+
+  "$FOLDCOMP_BIN" compress -d "$input_dir" "$db"
+  "$FOLDCOMP_BIN" check "$db"
+  "$FOLDCOMP_BIN" decompress -t 2 "$db" "$out_dir"
+  "$FOLDCOMP_BIN" extract --fasta "$db" "$fasta_out"
+  "$FOLDCOMP_BIN" extract --plddt "$db" "$plddt_out"
+
+  assert_file_count_at_least "$out_dir" 4
+  assert_nonempty_file "$fasta_out"
+  assert_nonempty_file "$plddt_out"
+  assert_fasta_headers_at_least "$fasta_out" 4
+  assert_fasta_headers_at_least "$plddt_out" 4
+}
+
+run_subset_indexing_compatibility() {
+  local db="${TMP_ROOT}/foldcomp-smoke-fragment-db"
+  local subset_ids="${TMP_ROOT}/foldcomp-smoke-fragment-db.id-list"
+  local subset_out="${TMP_ROOT}/foldcomp-smoke-fragment-db-subset-out"
+  local subset_fasta="${TMP_ROOT}/foldcomp-smoke-fragment-db-subset.fasta"
+
+  cat > "$subset_ids" <<'EOF'
+test
+multichain
+EOF
+
+  rm -rf "$subset_out" "$subset_fasta"
+  mkdir -p "$subset_out"
+
+  "$FOLDCOMP_BIN" decompress -t 2 -l "$subset_ids" "$db" "$subset_out"
+  "$FOLDCOMP_BIN" extract --fasta -t 2 -l "$subset_ids" "$db" "$subset_fasta"
+
+  assert_file_count_at_least "$subset_out" 2
+  assert_nonempty_file "$subset_fasta"
+  assert_fasta_headers_at_least "$subset_fasta" 3
+  grep -q '^>multichain|m1|cA' "$subset_fasta"
+}
+
 run_reference_cases
 run_regression_case "1cfg" "0.2" "0.7" "0.2" "0.7"
 run_regression_case "1adn" "0.35" "0.4" "0.2" "0.5"
@@ -94,3 +184,6 @@ run_regression_case "2ap2" "0.15" "0.2" "0.2" "0.5"
 run_regression_case "2gn5" "1.5" "1.8" "0.2" "0.8"
 run_regression_case "4kuk" "0.1" "0.15" "0.2" "0.5"
 run_regression_case "7c2s" "0.01" "0.01" "0.2" "0.5"
+run_legacy_db_compatibility
+run_fragment_db_compatibility
+run_subset_indexing_compatibility

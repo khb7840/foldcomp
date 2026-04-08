@@ -32,6 +32,7 @@
 
 // Standard libraries
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream> // IWYU pragma: keep
@@ -502,6 +503,10 @@ int main(int argc, char* const *argv) {
                 break;
             case 'p':
                 ext_plddt_digits = atoi(optarg);
+                if (ext_plddt_digits < 1 || ext_plddt_digits > 4) {
+                    std::cerr << "[Error] Invalid pLDDT digits. Please use 1, 2, 3, or 4." << std::endl;
+                    return print_usage();
+                }
                 break;
             case 'v':
                 return print_version();
@@ -1260,39 +1265,103 @@ int main(int argc, char* const *argv) {
                     std::string baseTitle = ext_use_title ? containerTitle : strName;
 
                     for (size_t fragmentIndex = 0; fragmentIndex < containerFragments.size(); fragmentIndex++) {
-                        Foldcomp compRes;
-                        int flag = compRes.read(containerFragments[fragmentIndex].payload.data(),
-                                                containerFragments[fragmentIndex].payload.size());
-                        if (flag != 0) {
-                            std::cerr << "[Error] Failed to read a container fragment during extraction." << std::endl;
-                            return false;
-                        }
-                        if (baseTitle.empty() && ext_use_title && !compRes.strTitle.empty()) {
-                            baseTitle = compRes.strTitle;
-                        }
+                        const ContainerFragment& frag = containerFragments[fragmentIndex];
 
                         size_t groupIdx = groups.size();
                         for (size_t i = 0; i < groups.size(); i++) {
-                            if (groups[i].model == containerFragments[fragmentIndex].model &&
-                                groups[i].chain == containerFragments[fragmentIndex].chain) {
+                            if (groups[i].model == frag.model && groups[i].chain == frag.chain) {
                                 groupIdx = i;
                                 break;
                             }
                         }
                         if (groupIdx == groups.size()) {
                             ExtractGroup g;
-                            g.model = containerFragments[fragmentIndex].model;
-                            g.chain = containerFragments[fragmentIndex].chain;
+                            g.model = frag.model;
+                            g.chain = frag.chain;
                             groups.push_back(std::move(g));
                         }
 
                         std::string fragmentData;
-                        compRes.extract(fragmentData, ext_mode, ext_plddt_digits);
+                        int fragmentResidueCount = 0;
+
+                        if (frag.kind == CONTAINER_FRAGMENT_KIND_RAW_ATOMS) {
+                            std::vector<AtomCoordinate> rawAtoms;
+                            if (!deserializeAtomCoordinates(frag.payload.data(), frag.payload.size(), rawAtoms)) {
+                                std::cerr << "[Error] Failed to decode a raw atom fragment during extraction." << std::endl;
+                                return false;
+                            }
+                            int digits = ext_plddt_digits;
+                            auto appendPlddt = [&](float tf) {
+                                bool isZeroToOne = tf <= 1.0f && digits <= 2;
+                                float clamped = isZeroToOne
+                                    ? std::clamp(tf, 0.0f, 1.0f)
+                                    : std::clamp(tf, 0.0f, 100.0f);
+                                if (digits > 1 && !fragmentData.empty()) {
+                                    fragmentData.push_back(',');
+                                }
+                                if (isZeroToOne) {
+                                    int scaled100 = static_cast<int>(std::round(clamped * 100.0f));
+                                    fragmentData.push_back(static_cast<char>('0' + (scaled100 / 10) % 10));
+                                    if (digits > 1) {
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled100 % 10)));
+                                    }
+                                } else {
+                                    int scaled100 = static_cast<int>(std::round(clamped * 100.0f));
+                                    int scaled10 = static_cast<int>(std::round(clamped * 10.0f));
+                                    int whole = static_cast<int>(clamped);
+                                    fragmentData.push_back(static_cast<char>('0' + (whole / 10)));
+                                    if (digits > 1) {
+                                        fragmentData.push_back(static_cast<char>('0' + (whole % 10)));
+                                    }
+                                    if (digits >= 3) {
+                                        fragmentData.push_back('.');
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled10 % 10)));
+                                    }
+                                    if (digits == 4) {
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled100 % 10)));
+                                    }
+                                }
+                            };
+
+                            bool hasPrevResIndex = false;
+                            int prevResIndex = 0;
+                            for (const auto& atom : rawAtoms) {
+                                if (hasPrevResIndex && atom.residue_index == prevResIndex) {
+                                    continue;
+                                }
+                                hasPrevResIndex = true;
+                                prevResIndex = atom.residue_index;
+                                if (ext_mode == 1) {
+                                    // FASTA: one letter per residue
+                                    fragmentData.push_back(getOneLetterCode(atom.residue));
+                                } else {
+                                    appendPlddt(atom.tempFactor);
+                                }
+                                fragmentResidueCount++;
+                            }
+                        } else if (frag.kind == CONTAINER_FRAGMENT_KIND_FCZ) {
+                            Foldcomp compRes;
+                            int flag = compRes.read(frag.payload.data(), frag.payload.size());
+                            if (flag != 0) {
+                                std::cerr << "[Error] Failed to read a container fragment during extraction." << std::endl;
+                                return false;
+                            }
+                            if (baseTitle.empty() && ext_use_title && !compRes.strTitle.empty()) {
+                                baseTitle = compRes.strTitle;
+                            }
+                            compRes.extract(fragmentData, ext_mode, ext_plddt_digits);
+                            fragmentResidueCount = compRes.nResidue;
+                        } else {
+                            std::cerr << "[Error] Unsupported container fragment kind during extraction: "
+                                      << static_cast<int>(frag.kind) << std::endl;
+                            return false;
+                        }
+
                         if (ext_mode == 0 && ext_plddt_digits > 1 && !groups[groupIdx].data.empty()) {
                             groups[groupIdx].data.push_back(',');
                         }
                         groups[groupIdx].data += fragmentData;
-                        groups[groupIdx].totalResidue += compRes.nResidue;
+                        groups[groupIdx].totalResidue += fragmentResidueCount;
                     }
 
                     if (baseTitle.empty()) {
