@@ -1260,39 +1260,93 @@ int main(int argc, char* const *argv) {
                     std::string baseTitle = ext_use_title ? containerTitle : strName;
 
                     for (size_t fragmentIndex = 0; fragmentIndex < containerFragments.size(); fragmentIndex++) {
-                        Foldcomp compRes;
-                        int flag = compRes.read(containerFragments[fragmentIndex].payload.data(),
-                                                containerFragments[fragmentIndex].payload.size());
-                        if (flag != 0) {
-                            std::cerr << "[Error] Failed to read a container fragment during extraction." << std::endl;
-                            return false;
-                        }
-                        if (baseTitle.empty() && ext_use_title && !compRes.strTitle.empty()) {
-                            baseTitle = compRes.strTitle;
-                        }
+                        const ContainerFragment& frag = containerFragments[fragmentIndex];
 
                         size_t groupIdx = groups.size();
                         for (size_t i = 0; i < groups.size(); i++) {
-                            if (groups[i].model == containerFragments[fragmentIndex].model &&
-                                groups[i].chain == containerFragments[fragmentIndex].chain) {
+                            if (groups[i].model == frag.model && groups[i].chain == frag.chain) {
                                 groupIdx = i;
                                 break;
                             }
                         }
                         if (groupIdx == groups.size()) {
                             ExtractGroup g;
-                            g.model = containerFragments[fragmentIndex].model;
-                            g.chain = containerFragments[fragmentIndex].chain;
+                            g.model = frag.model;
+                            g.chain = frag.chain;
                             groups.push_back(std::move(g));
                         }
 
                         std::string fragmentData;
-                        compRes.extract(fragmentData, ext_mode, ext_plddt_digits);
+                        int fragmentResidueCount = 0;
+
+                        if (frag.kind == CONTAINER_FRAGMENT_KIND_RAW_ATOMS) {
+                            std::vector<AtomCoordinate> rawAtoms;
+                            if (!deserializeAtomCoordinates(frag.payload.data(), frag.payload.size(), rawAtoms)) {
+                                std::cerr << "[Error] Failed to decode a raw atom fragment during extraction." << std::endl;
+                                return false;
+                            }
+                            // Collect per-residue data in order
+                            int prevResIndex = std::numeric_limits<int>::min();
+                            for (const auto& atom : rawAtoms) {
+                                if (atom.residue_index == prevResIndex) {
+                                    continue;
+                                }
+                                prevResIndex = atom.residue_index;
+                                if (ext_mode == 1) {
+                                    // FASTA: one letter per residue
+                                    fragmentData.push_back(getOneLetterCode(atom.residue));
+                                } else {
+                                    // pLDDT: use first atom of each residue (CA preferred)
+                                    float tf = atom.tempFactor;
+                                    int digits = ext_plddt_digits < 1 ? 1 : (ext_plddt_digits > 4 ? 4 : ext_plddt_digits);
+                                    bool isZeroToOne = tf <= 1.0f && digits <= 2;
+                                    float clamped = isZeroToOne
+                                        ? std::clamp(tf, 0.0f, 1.0f)
+                                        : std::clamp(tf, 0.0f, 100.0f);
+                                    if (ext_plddt_digits > 1 && !fragmentData.empty()) {
+                                        fragmentData.push_back(',');
+                                    }
+                                    char digit1 = isZeroToOne
+                                        ? (char)((int)(clamped * 10.0f) % 10) + '0'
+                                        : (char)(clamped / 10.0f) + '0';
+                                    char digit2 = isZeroToOne
+                                        ? (char)((int)(clamped * 100.0f) % 10) + '0'
+                                        : (char)((int)clamped % 10) + '0';
+                                    fragmentData.push_back(digit1);
+                                    if (digits > 1) fragmentData.push_back(digit2);
+                                    if (digits >= 3) {
+                                        fragmentData.push_back('.');
+                                        fragmentData.push_back((char)((int)(clamped * 10.0f) % 10) + '0');
+                                    }
+                                    if (digits == 4) {
+                                        fragmentData.push_back((char)((int)(clamped * 100.0f) % 10) + '0');
+                                    }
+                                }
+                                fragmentResidueCount++;
+                            }
+                        } else if (frag.kind == CONTAINER_FRAGMENT_KIND_FCZ) {
+                            Foldcomp compRes;
+                            int flag = compRes.read(frag.payload.data(), frag.payload.size());
+                            if (flag != 0) {
+                                std::cerr << "[Error] Failed to read a container fragment during extraction." << std::endl;
+                                return false;
+                            }
+                            if (baseTitle.empty() && ext_use_title && !compRes.strTitle.empty()) {
+                                baseTitle = compRes.strTitle;
+                            }
+                            compRes.extract(fragmentData, ext_mode, ext_plddt_digits);
+                            fragmentResidueCount = compRes.nResidue;
+                        } else {
+                            std::cerr << "[Error] Unsupported container fragment kind during extraction: "
+                                      << static_cast<int>(frag.kind) << std::endl;
+                            return false;
+                        }
+
                         if (ext_mode == 0 && ext_plddt_digits > 1 && !groups[groupIdx].data.empty()) {
                             groups[groupIdx].data.push_back(',');
                         }
                         groups[groupIdx].data += fragmentData;
-                        groups[groupIdx].totalResidue += compRes.nResidue;
+                        groups[groupIdx].totalResidue += fragmentResidueCount;
                     }
 
                     if (baseTitle.empty()) {
