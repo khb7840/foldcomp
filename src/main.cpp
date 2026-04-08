@@ -32,6 +32,7 @@
 
 // Standard libraries
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream> // IWYU pragma: keep
@@ -502,6 +503,10 @@ int main(int argc, char* const *argv) {
                 break;
             case 'p':
                 ext_plddt_digits = atoi(optarg);
+                if (ext_plddt_digits < 1 || ext_plddt_digits > 4) {
+                    std::cerr << "[Error] Invalid pLDDT digits. Please use 1, 2, 3, or 4." << std::endl;
+                    return print_usage();
+                }
                 break;
             case 'v':
                 return print_version();
@@ -1285,42 +1290,52 @@ int main(int argc, char* const *argv) {
                                 std::cerr << "[Error] Failed to decode a raw atom fragment during extraction." << std::endl;
                                 return false;
                             }
-                            // Collect per-residue data in order
-                            int prevResIndex = std::numeric_limits<int>::min();
+                            int digits = ext_plddt_digits;
+                            auto appendPlddt = [&](float tf) {
+                                bool isZeroToOne = tf <= 1.0f && digits <= 2;
+                                float clamped = isZeroToOne
+                                    ? std::clamp(tf, 0.0f, 1.0f)
+                                    : std::clamp(tf, 0.0f, 100.0f);
+                                if (digits > 1 && !fragmentData.empty()) {
+                                    fragmentData.push_back(',');
+                                }
+                                if (isZeroToOne) {
+                                    int scaled100 = static_cast<int>(std::round(clamped * 100.0f));
+                                    fragmentData.push_back(static_cast<char>('0' + (scaled100 / 10) % 10));
+                                    if (digits > 1) {
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled100 % 10)));
+                                    }
+                                } else {
+                                    int scaled100 = static_cast<int>(std::round(clamped * 100.0f));
+                                    int scaled10 = static_cast<int>(std::round(clamped * 10.0f));
+                                    int whole = static_cast<int>(clamped);
+                                    fragmentData.push_back(static_cast<char>('0' + (whole / 10)));
+                                    if (digits > 1) {
+                                        fragmentData.push_back(static_cast<char>('0' + (whole % 10)));
+                                    }
+                                    if (digits >= 3) {
+                                        fragmentData.push_back('.');
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled10 % 10)));
+                                    }
+                                    if (digits == 4) {
+                                        fragmentData.push_back(static_cast<char>('0' + (scaled100 % 10)));
+                                    }
+                                }
+                            };
+
+                            bool hasPrevResIndex = false;
+                            int prevResIndex = 0;
                             for (const auto& atom : rawAtoms) {
-                                if (atom.residue_index == prevResIndex) {
+                                if (hasPrevResIndex && atom.residue_index == prevResIndex) {
                                     continue;
                                 }
+                                hasPrevResIndex = true;
                                 prevResIndex = atom.residue_index;
                                 if (ext_mode == 1) {
                                     // FASTA: one letter per residue
                                     fragmentData.push_back(getOneLetterCode(atom.residue));
                                 } else {
-                                    // pLDDT: use first atom of each residue (CA preferred)
-                                    float tf = atom.tempFactor;
-                                    int digits = ext_plddt_digits < 1 ? 1 : (ext_plddt_digits > 4 ? 4 : ext_plddt_digits);
-                                    bool isZeroToOne = tf <= 1.0f && digits <= 2;
-                                    float clamped = isZeroToOne
-                                        ? std::clamp(tf, 0.0f, 1.0f)
-                                        : std::clamp(tf, 0.0f, 100.0f);
-                                    if (ext_plddt_digits > 1 && !fragmentData.empty()) {
-                                        fragmentData.push_back(',');
-                                    }
-                                    char digit1 = isZeroToOne
-                                        ? (char)((int)(clamped * 10.0f) % 10) + '0'
-                                        : (char)(clamped / 10.0f) + '0';
-                                    char digit2 = isZeroToOne
-                                        ? (char)((int)(clamped * 100.0f) % 10) + '0'
-                                        : (char)((int)clamped % 10) + '0';
-                                    fragmentData.push_back(digit1);
-                                    if (digits > 1) fragmentData.push_back(digit2);
-                                    if (digits >= 3) {
-                                        fragmentData.push_back('.');
-                                        fragmentData.push_back((char)((int)(clamped * 10.0f) % 10) + '0');
-                                    }
-                                    if (digits == 4) {
-                                        fragmentData.push_back((char)((int)(clamped * 100.0f) % 10) + '0');
-                                    }
+                                    appendPlddt(atom.tempFactor);
                                 }
                                 fragmentResidueCount++;
                             }
