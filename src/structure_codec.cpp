@@ -10,6 +10,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <set>
+#include <limits>
 
 namespace {
 
@@ -108,6 +109,9 @@ bool setTitleOnFirstFczFragment(std::vector<ContainerFragment>& fragments, const
             return false;
         }
 
+        if (title.size() > std::numeric_limits<uint32_t>::max()) {
+            return false;
+        }
         const uint32_t newTitleLength = static_cast<uint32_t>(title.size());
         const bool sameTitleLength = header.lenTitle == newTitleLength;
         const bool sameTitleBytes = sameTitleLength &&
