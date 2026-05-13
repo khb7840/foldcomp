@@ -78,6 +78,32 @@ std::string trim(const std::string& str, const std::string& whitespace = " \t") 
     return str.substr(strBegin, strEnd - strBegin + 1);
 }
 
+bool setTitleOnFirstFczFragment(std::vector<ContainerFragment>& fragments, const std::string& title) {
+    if (title.empty()) {
+        return true;
+    }
+    for (auto& fragment : fragments) {
+        if (fragment.kind != CONTAINER_FRAGMENT_KIND_FCZ) {
+            continue;
+        }
+        Foldcomp compRes;
+        if (compRes.read(fragment.payload.data(), fragment.payload.size()) != 0) {
+            return false;
+        }
+        if (compRes.strTitle == title) {
+            return true;
+        }
+        compRes.strTitle = title;
+        std::string updatedPayload;
+        if (compRes.writeString(updatedPayload) != 0) {
+            return false;
+        }
+        fragment.payload.swap(updatedPayload);
+        return true;
+    }
+    return true;
+}
+
 }
 
 bool hasContainerMagic(const char* data, size_t size) {
@@ -254,9 +280,14 @@ bool writeContainerToString(
     std::string& output, const std::string& title,
     const std::vector<ContainerFragment>& fragments
 ) {
+    std::vector<ContainerFragment> normalizedFragments = fragments;
+    if (!setTitleOnFirstFczFragment(normalizedFragments, title)) {
+        return false;
+    }
+
     output.clear();
     size_t totalSize = CONTAINER_MAGIC_LENGTH + sizeof(CompressedFileHeader) + sizeof(uint32_t) + title.size();
-    for (const auto& fragment : fragments) {
+    for (const auto& fragment : normalizedFragments) {
         totalSize += sizeof(fragment.kind) + sizeof(fragment.model) + sizeof(uint8_t) +
                      std::min<size_t>(255, fragment.chain.size()) + sizeof(uint32_t) + fragment.payload.size();
     }
@@ -266,14 +297,14 @@ bool writeContainerToString(
     header.version = FOLDCOMP_FORMAT_VERSION_CONTAINER;
     header.flags = FOLDCOMP_FORMAT_FLAG_CONTAINER;
     header.lenTitle = static_cast<uint32_t>(title.size());
-    uint32_t nFragments = static_cast<uint32_t>(fragments.size());
+    uint32_t nFragments = static_cast<uint32_t>(normalizedFragments.size());
 
     output.append(CONTAINER_MAGIC, CONTAINER_MAGIC_LENGTH);
     appendBytes(output, header);
     appendBytes(output, nFragments);
     output.append(title);
 
-    for (const auto& fragment : fragments) {
+    for (const auto& fragment : normalizedFragments) {
         uint8_t chainLen = static_cast<uint8_t>(std::min<size_t>(255, fragment.chain.size()));
         uint32_t payloadSize = static_cast<uint32_t>(fragment.payload.size());
         appendBytes(output, fragment.kind);
@@ -455,6 +486,9 @@ bool decodeStructureToSegments(
                 int flag = compRes.read(fragment.payload.data(), fragment.payload.size());
                 if (flag != 0) {
                     return false;
+                }
+                if (title.empty() && !compRes.strTitle.empty()) {
+                    title = compRes.strTitle;
                 }
                 compRes.useAltAtomOrder = useAltOrder;
                 flag = compRes.decompress(segment.atoms);
