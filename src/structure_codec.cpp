@@ -375,9 +375,20 @@ void writeSegmentsToPDB(
     }
     bool writeModels = modelSet.size() > 1;
     int currModel = -1;
+    std::vector<AtomCoordinate> modelAtoms;
+    auto flushModelAtoms = [&]() {
+        if (modelAtoms.empty()) {
+            return;
+        }
+        std::string pdbPart;
+        writeAtomCoordinatesToPDB(modelAtoms, "", pdbPart);
+        output.append(pdbPart);
+        modelAtoms.clear();
+    };
     for (const auto& segment : segments) {
         if (writeModels && segment.model != currModel) {
             if (currModel != -1) {
+                flushModelAtoms();
                 output.append("ENDMDL\n");
             }
             char modelLine[32];
@@ -385,11 +396,9 @@ void writeSegmentsToPDB(
             output.append(modelLine, written);
             currModel = segment.model;
         }
-        std::vector<AtomCoordinate> atoms = segment.atoms;
-        std::string pdbPart;
-        writeAtomCoordinatesToPDB(atoms, "", pdbPart);
-        output.append(pdbPart);
+        modelAtoms.insert(modelAtoms.end(), segment.atoms.begin(), segment.atoms.end());
     }
+    flushModelAtoms();
     if (writeModels) {
         output.append("ENDMDL\n");
     }

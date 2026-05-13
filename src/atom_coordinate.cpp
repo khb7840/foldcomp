@@ -473,7 +473,12 @@ void writeAtomCoordinatesToPDB(
         output.push_back(' ');
         output.push_back(atom.atom.empty() ? ' ' : atom.atom[0]);
         output.append("  \n", 3);
-        if (i == (total-1)) {
+        bool needsTer = (i == (total - 1));
+        if (!needsTer) {
+            const AtomCoordinate& nextAtom = atoms[i + 1];
+            needsTer = (nextAtom.model != atom.model) || (nextAtom.chain != atom.chain);
+        }
+        if (needsTer) {
             output.append("TER   ", 6);
             appendRightAlignedInt(output, atom.atom_index + 1, 5);
             output.append("      ", 6);
