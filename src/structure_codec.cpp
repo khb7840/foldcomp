@@ -376,7 +376,7 @@ void writeSegmentsToPDB(
     bool writeModels = modelSet.size() > 1;
     int currModel = -1;
     std::vector<AtomCoordinate> modelAtoms;
-    auto flushModelAtoms = [&]() {
+    auto flushModelAtoms = [&modelAtoms, &output]() {
         if (modelAtoms.empty()) {
             return;
         }

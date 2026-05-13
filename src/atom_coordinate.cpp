@@ -474,7 +474,7 @@ void writeAtomCoordinatesToPDB(
         output.push_back(atom.atom.empty() ? ' ' : atom.atom[0]);
         output.append("  \n", 3);
         bool needsTer = (i == (total - 1));
-        if (!needsTer) {
+        if (i < (total - 1)) {
             const AtomCoordinate& nextAtom = atoms[i + 1];
             needsTer = (nextAtom.model != atom.model) || (nextAtom.chain != atom.chain);
         }
