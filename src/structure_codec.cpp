@@ -98,7 +98,7 @@ bool setTitleOnFirstFczFragment(std::vector<ContainerFragment>& fragments, const
         if (compRes.writeString(updatedPayload) != 0) {
             return false;
         }
-        fragment.payload.swap(updatedPayload);
+        fragment.payload = std::move(updatedPayload);
         return true;
     }
     return true;
