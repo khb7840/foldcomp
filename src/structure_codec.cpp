@@ -377,9 +377,6 @@ void writeSegmentsToPDB(
     int currModel = -1;
     for (size_t i = 0; i < segments.size(); i++) {
         const auto& segment = segments[i];
-        if (segment.atoms.empty()) {
-            continue;
-        }
         if (writeModels && segment.model != currModel) {
             if (currModel != -1) {
                 output.append("ENDMDL\n");
@@ -388,6 +385,9 @@ void writeSegmentsToPDB(
             int written = snprintf(modelLine, sizeof(modelLine), "MODEL     %4d\n", segment.model);
             output.append(modelLine, written);
             currModel = segment.model;
+        }
+        if (segment.atoms.empty()) {
+            continue;
         }
         bool emitFinalTer = true;
         size_t nextIndex = i + 1;
