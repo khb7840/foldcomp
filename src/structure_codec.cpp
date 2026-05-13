@@ -82,22 +82,53 @@ bool setTitleOnFirstFczFragment(std::vector<ContainerFragment>& fragments, const
     if (title.empty()) {
         return true;
     }
-    for (auto& fragment : fragments) {
+    for (std::vector<ContainerFragment>::iterator fragmentIt = fragments.begin();
+         fragmentIt != fragments.end();
+         ++fragmentIt) {
+        ContainerFragment& fragment = *fragmentIt;
         if (fragment.kind != CONTAINER_FRAGMENT_KIND_FCZ) {
             continue;
         }
-        Foldcomp compRes;
-        if (compRes.read(fragment.payload.data(), fragment.payload.size()) != 0) {
+        const size_t minimumPayloadSize = MAGICNUMBER_LENGTH + sizeof(CompressedFileHeader);
+        if (fragment.payload.size() < minimumPayloadSize) {
             return false;
         }
-        if (compRes.strTitle == title) {
+        if (memcmp(fragment.payload.data(), MAGICNUMBER, MAGICNUMBER_LENGTH) != 0) {
+            return false;
+        }
+
+        CompressedFileHeader header = {};
+        memcpy(&header, fragment.payload.data() + MAGICNUMBER_LENGTH, sizeof(header));
+        const size_t anchorBytes = static_cast<size_t>(header.nAnchor) * sizeof(int);
+        const size_t titleOffset = minimumPayloadSize + anchorBytes;
+        if (titleOffset > fragment.payload.size()) {
+            return false;
+        }
+        if (titleOffset + header.lenTitle > fragment.payload.size()) {
+            return false;
+        }
+
+        const uint32_t newTitleLength = static_cast<uint32_t>(title.size());
+        const bool sameTitleLength = header.lenTitle == newTitleLength;
+        const bool sameTitleBytes = sameTitleLength &&
+            (header.lenTitle == 0 ||
+             memcmp(fragment.payload.data() + titleOffset, title.data(), header.lenTitle) == 0);
+        if (sameTitleBytes) {
             return true;
         }
-        compRes.strTitle = title;
+
+        const size_t oldTitleEnd = titleOffset + header.lenTitle;
+        header.lenTitle = newTitleLength;
+
         std::string updatedPayload;
-        if (compRes.writeString(updatedPayload) != 0) {
-            return false;
+        updatedPayload.reserve(fragment.payload.size() - (oldTitleEnd - titleOffset) + title.size());
+        updatedPayload.append(fragment.payload.data(), MAGICNUMBER_LENGTH);
+        appendBytes(updatedPayload, header);
+        if (anchorBytes > 0) {
+            updatedPayload.append(fragment.payload.data() + minimumPayloadSize, anchorBytes);
         }
+        updatedPayload.append(title);
+        updatedPayload.append(fragment.payload.data() + oldTitleEnd, fragment.payload.size() - oldTitleEnd);
         fragment.payload = std::move(updatedPayload);
         return true;
     }
