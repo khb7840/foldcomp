@@ -448,8 +448,8 @@ void writeAtomCoordinatesToPDB(
         appendTitleLines(output, title);
     }
 
-    size_t total = atoms.size();
-    for (size_t i = 0; i < total; i++) {
+    int total = static_cast<int>(atoms.size());
+    for (int i = 0; i < total; i++) {
         const AtomCoordinate& atom = atoms[i];
         output.append("ATOM  ", 6);
         appendRightAlignedInt(output, atom.atom_index, 5);

@@ -396,7 +396,7 @@ void writeSegmentsToPDB(
         }
         if (nextIndex < segments.size()) {
             const auto& nextSegment = segments[nextIndex];
-            if (nextSegment.model == segment.model) {
+            if (!nextSegment.atoms.empty() && nextSegment.model == segment.model) {
                 const AtomCoordinate& lastAtom = segment.atoms.back();
                 const AtomCoordinate& nextAtom = nextSegment.atoms.front();
                 if (lastAtom.model == nextAtom.model && lastAtom.chain == nextAtom.chain) {
