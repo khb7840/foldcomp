@@ -437,14 +437,19 @@ std::vector<AtomCoordinate> weightedAverage(
 }
 
 void writeAtomCoordinatesToPDB(
-    std::vector<AtomCoordinate>& atoms, const std::string& title, std::string& output
+    const std::vector<AtomCoordinate>& atoms, const std::string& title, std::string& output,
+    bool appendOutput, bool emitFinalTer
 ) {
-    output.clear();
-    output.reserve(title.size() + atoms.size() * 96);
-    appendTitleLines(output, title);
+    if (!appendOutput) {
+        output.clear();
+    }
+    output.reserve(output.size() + title.size() + atoms.size() * 96);
+    if (!title.empty()) {
+        appendTitleLines(output, title);
+    }
 
-    int total = atoms.size();
-    for (int i = 0; i < total; i++) {
+    size_t total = atoms.size();
+    for (size_t i = 0; i < total; i++) {
         const AtomCoordinate& atom = atoms[i];
         output.append("ATOM  ", 6);
         appendRightAlignedInt(output, atom.atom_index, 5);
@@ -475,7 +480,7 @@ void writeAtomCoordinatesToPDB(
         output.append("  \n", 3);
         bool needsTer = false;
         if (i == (total - 1)) {
-            needsTer = true;
+            needsTer = emitFinalTer;
         } else {
             const AtomCoordinate& nextAtom = atoms[i + 1];
             needsTer = (nextAtom.model != atom.model) || (nextAtom.chain != atom.chain);
@@ -495,7 +500,7 @@ void writeAtomCoordinatesToPDB(
 }
 
 int writeAtomCoordinatesToPDBFile(
-    std::vector<AtomCoordinate>& atoms, const std::string& title, const std::string& pdb_path
+    const std::vector<AtomCoordinate>& atoms, const std::string& title, const std::string& pdb_path
 ) {
     std::string output;
     writeAtomCoordinatesToPDB(atoms, title, output);

@@ -84,10 +84,11 @@ std::vector<AtomCoordinate> weightedAverage(
 );
 
 void writeAtomCoordinatesToPDB(
-    std::vector<AtomCoordinate>& atoms, const std::string& title, std::string& output
+    const std::vector<AtomCoordinate>& atoms, const std::string& title, std::string& output,
+    bool appendOutput = false, bool emitFinalTer = true
 );
 int writeAtomCoordinatesToPDBFile(
-    std::vector<AtomCoordinate>& atoms, const std::string& title, const std::string& pdb_path
+    const std::vector<AtomCoordinate>& atoms, const std::string& title, const std::string& pdb_path
 );
 
 #ifdef FOLDCOMP_WITH_MMCIF_OUTPUT

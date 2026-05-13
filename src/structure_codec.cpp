@@ -375,20 +375,13 @@ void writeSegmentsToPDB(
     }
     bool writeModels = modelSet.size() > 1;
     int currModel = -1;
-    std::vector<AtomCoordinate> modelAtoms;
-    auto flushModelAtoms = [&modelAtoms, &output]() {
-        if (modelAtoms.empty()) {
-            return;
+    for (size_t i = 0; i < segments.size(); i++) {
+        const auto& segment = segments[i];
+        if (segment.atoms.empty()) {
+            continue;
         }
-        std::string pdbPart;
-        writeAtomCoordinatesToPDB(modelAtoms, "", pdbPart);
-        output.append(pdbPart);
-        modelAtoms.clear();
-    };
-    for (const auto& segment : segments) {
         if (writeModels && segment.model != currModel) {
             if (currModel != -1) {
-                flushModelAtoms();
                 output.append("ENDMDL\n");
             }
             char modelLine[32];
@@ -396,10 +389,24 @@ void writeSegmentsToPDB(
             output.append(modelLine, written);
             currModel = segment.model;
         }
-        modelAtoms.insert(modelAtoms.end(), segment.atoms.begin(), segment.atoms.end());
+        bool emitFinalTer = true;
+        size_t nextIndex = i + 1;
+        while (nextIndex < segments.size() && segments[nextIndex].atoms.empty()) {
+            nextIndex++;
+        }
+        if (nextIndex < segments.size()) {
+            const auto& nextSegment = segments[nextIndex];
+            if (nextSegment.model == segment.model) {
+                const AtomCoordinate& lastAtom = segment.atoms.back();
+                const AtomCoordinate& nextAtom = nextSegment.atoms.front();
+                if (lastAtom.model == nextAtom.model && lastAtom.chain == nextAtom.chain) {
+                    emitFinalTer = false;
+                }
+            }
+        }
+        writeAtomCoordinatesToPDB(segment.atoms, "", output, true, emitFinalTer);
     }
-    flushModelAtoms();
-    if (writeModels) {
+    if (writeModels && currModel != -1) {
         output.append("ENDMDL\n");
     }
 }
