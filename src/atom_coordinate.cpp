@@ -460,7 +460,6 @@ void writeAtomCoordinatesToPDB(
             output.push_back(' ');
             appendLeftAligned(output, atom.atom, 3);
         }
-        output.push_back(' ');
         output.push_back(atom.altloc == '\0' ? ' ' : atom.altloc);
         appendRightAligned(output, atom.residue, 3);
         output.push_back(' ');
@@ -468,7 +467,7 @@ void writeAtomCoordinatesToPDB(
         output.push_back(chainId);
         appendRightAlignedInt(output, atom.residue_index, 4);
         output.push_back(atom.insertion_code == '\0' ? ' ' : atom.insertion_code);
-        output.append("    ", 4);
+        output.append("   ", 3);
         appendRightAlignedFixed<8, 1000, 3>(output, atom.coordinate.x);
         appendRightAlignedFixed<8, 1000, 3>(output, atom.coordinate.y);
         appendRightAlignedFixed<8, 1000, 3>(output, atom.coordinate.z);
