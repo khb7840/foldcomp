@@ -7,6 +7,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include "atom_coordinate.h"
 #include "foldcomp.h"
@@ -40,6 +41,111 @@ struct CoutStateGuard {
         std::cout.clear(state);
     }
 };
+
+bool residueNeedsRawFallback(const tcb::span<const AtomCoordinate>& residueAtoms) {
+    if (residueAtoms.empty()) {
+        return false;
+    }
+    auto aaIt = Foldcomp::AAS.find(residueAtoms[0].residue);
+    if (aaIt == Foldcomp::AAS.end()) {
+        return true;
+    }
+
+    int matchedCanonicalAtoms = 0;
+    bool hasOxt = false;
+    for (const auto& atom : residueAtoms) {
+        if (atom.altloc != ' ' && atom.altloc != '\0') {
+            return true;
+        }
+        if (atom.insertion_code != ' ' && atom.insertion_code != '\0') {
+            return true;
+        }
+        if (atom.atom == "OXT") {
+            if (hasOxt) {
+                return true;
+            }
+            hasOxt = true;
+            continue;
+        }
+        bool found = false;
+        for (const auto& canonicalAtom : aaIt->second.atoms) {
+            if (atom.atom == canonicalAtom) {
+                matchedCanonicalAtoms++;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            return true;
+        }
+    }
+    int expectedAtomCount = static_cast<int>(aaIt->second.atoms.size()) + (hasOxt ? 1 : 0);
+    return static_cast<int>(residueAtoms.size()) != expectedAtomCount ||
+           matchedCanonicalAtoms != static_cast<int>(aaIt->second.atoms.size());
+}
+
+bool regionNeedsRawFallback(const tcb::span<AtomCoordinate>& atoms) {
+    size_t residuesWithOxt = 0;
+    size_t residueStart = 0;
+    for (size_t i = 1; i <= atoms.size(); i++) {
+        bool endOfResidue = (i == atoms.size()) || startsNewResidue(atoms[i], atoms[i - 1]);
+        if (!endOfResidue) {
+            continue;
+        }
+        bool hasOxt = false;
+        for (size_t j = residueStart; j < i; j++) {
+            const auto& atom = atoms[j];
+            if (atom.atom == "OXT") {
+                hasOxt = true;
+                break;
+            }
+        }
+        if (hasOxt) {
+            residuesWithOxt++;
+            if (residuesWithOxt > 1 || i != atoms.size()) {
+                return true;
+            }
+        }
+        if (residueNeedsRawFallback(
+                tcb::span<const AtomCoordinate>(atoms.data() + residueStart, i - residueStart))) {
+            return true;
+        }
+        residueStart = i;
+    }
+    return false;
+}
+
+size_t countResidues(const tcb::span<AtomCoordinate>& atoms) {
+    if (atoms.empty()) {
+        return 0;
+    }
+    size_t residueCount = 1;
+    for (size_t i = 1; i < atoms.size(); i++) {
+        if (startsNewResidue(atoms[i], atoms[i - 1])) {
+            residueCount++;
+        }
+    }
+    return residueCount;
+}
+
+bool shouldStoreSmallMixedFragmentAsRaw(
+    const tcb::span<AtomCoordinate>& chainSpan,
+    const std::vector<BackboneRegion>& regions,
+    const std::vector<bool>& regionNeedsRaw
+) {
+    if (regions.size() <= 1) {
+        return false;
+    }
+    if (countResidues(chainSpan) > 24) {
+        return false;
+    }
+    for (size_t i = 0; i < regions.size(); i++) {
+        if (!regions[i].encodable || regionNeedsRaw[i]) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void releaseFoldcompDatabase(FoldcompDatabaseObject* db) {
     if (db->memory_handle != NULL) {
@@ -239,6 +345,127 @@ int decompress(
         if (!decodeStructureToMMCIF(input, input_size, use_alt_order, name, output)) {
             return 1;
         }
+
+        int encodeStructureToFoldcompContainer(
+            const std::string& title,
+            const char* data,
+            size_t size,
+            const char* format,
+            int anchorResidueThreshold,
+            float maxBackboneRmsd,
+            std::string& output
+        ) {
+            std::vector<AtomCoordinate> atomCoordinates;
+            int status = PARSE_PDB_OK;
+            if (!parseStructureAtoms(data, size, false, atomCoordinates, status, nullptr, format)) {
+                return status;
+            }
+            std::vector<ContainerFragment> encodedFragments;
+            std::vector<std::pair<size_t, size_t>> chainIndices = identifyChains(atomCoordinates);
+            for (const auto& chainRegion : chainIndices) {
+                std::vector<std::pair<size_t, size_t>> fragmentIndices = identifyDiscontinousResInd(
+                    atomCoordinates, chainRegion.first, chainRegion.second
+                );
+                if (fragmentIndices.empty()) {
+                    fragmentIndices.push_back(chainRegion);
+                }
+                for (const auto& fragment : fragmentIndices) {
+                    tcb::span<AtomCoordinate> chainSpan(
+                        atomCoordinates.data() + fragment.first,
+                        fragment.second - fragment.first
+                    );
+                    if (chainSpan.empty()) {
+                        continue;
+                    }
+                    std::vector<BackboneRegion> regions = identifyBackboneRegions(chainSpan);
+                    if (regions.empty()) {
+                        continue;
+                    }
+                    std::vector<bool> regionNeedsRaw(regions.size(), false);
+                    for (size_t regionIndex = 0; regionIndex < regions.size(); regionIndex++) {
+                        if (!regions[regionIndex].encodable) {
+                            continue;
+                        }
+                        tcb::span<AtomCoordinate> regionSpan(
+                            chainSpan.data() + regions[regionIndex].start,
+                            regions[regionIndex].end - regions[regionIndex].start
+                        );
+                        regionNeedsRaw[regionIndex] = regionNeedsRawFallback(regionSpan);
+                    }
+                    if (shouldStoreSmallMixedFragmentAsRaw(chainSpan, regions, regionNeedsRaw)) {
+                        ContainerFragment containerFragment;
+                        containerFragment.kind = CONTAINER_FRAGMENT_KIND_RAW_ATOMS;
+                        containerFragment.model = chainSpan.front().model;
+                        containerFragment.chain = chainSpan.front().chain;
+                        if (!serializeAtomCoordinates(
+                                tcb::span<const AtomCoordinate>(chainSpan.data(), chainSpan.size()),
+                                containerFragment.payload)) {
+                            return PARSE_PDB_INVALID_FORMAT;
+                        }
+                        encodedFragments.push_back(std::move(containerFragment));
+                        continue;
+                    }
+                    for (size_t regionIndex = 0; regionIndex < regions.size(); regionIndex++) {
+                        const auto& region = regions[regionIndex];
+                        tcb::span<AtomCoordinate> regionSpan(
+                            chainSpan.data() + region.start,
+                            region.end - region.start
+                        );
+                        ContainerFragment containerFragment;
+                        containerFragment.model = chainSpan[region.start].model;
+                        containerFragment.chain = chainSpan[region.start].chain;
+                        bool useFoldcompEncoding = region.encodable && !regionNeedsRaw[regionIndex];
+                        if (useFoldcompEncoding) {
+                            Foldcomp compRes;
+                            compRes.strTitle = title;
+                            compRes.anchorThreshold = anchorResidueThreshold;
+                            std::vector<BackboneChain> compData = compRes.compress(regionSpan);
+                            if (compData.empty()) {
+                                continue;
+                            }
+                            containerFragment.kind = CONTAINER_FRAGMENT_KIND_FCZ;
+                            if (compRes.writeString(containerFragment.payload) != 0) {
+                                return PARSE_PDB_INVALID_FORMAT;
+                            }
+                            if (compRes.exceedsBackboneRmsdThreshold(maxBackboneRmsd)) {
+                                containerFragment.kind = CONTAINER_FRAGMENT_KIND_RAW_ATOMS;
+                                containerFragment.payload.clear();
+                                if (!serializeAtomCoordinates(
+                                        tcb::span<const AtomCoordinate>(regionSpan.data(), regionSpan.size()),
+                                        containerFragment.payload)) {
+                                    return PARSE_PDB_INVALID_FORMAT;
+                                }
+                            }
+                        } else {
+                            containerFragment.kind = CONTAINER_FRAGMENT_KIND_RAW_ATOMS;
+                            if (!serializeAtomCoordinates(
+                                    tcb::span<const AtomCoordinate>(regionSpan.data(), regionSpan.size()),
+                                    containerFragment.payload)) {
+                                return PARSE_PDB_INVALID_FORMAT;
+                            }
+                        }
+                        encodedFragments.push_back(std::move(containerFragment));
+                    }
+                }
+            }
+
+            if (encodedFragments.empty()) {
+                return PARSE_PDB_NO_ATOM;
+            }
+
+            bool useContainer = encodedFragments.size() > 1 ||
+                                encodedFragments[0].kind != CONTAINER_FRAGMENT_KIND_FCZ ||
+                                encodedFragments[0].chain.size() != 1 ||
+                                encodedFragments[0].model != 1;
+            if (useContainer) {
+                if (!writeContainerToString(output, title, encodedFragments)) {
+                    return PARSE_PDB_INVALID_FORMAT;
+                }
+            } else {
+                output = encodedFragments[0].payload;
+            }
+            return PARSE_PDB_OK;
+        }
         return 0;
     }
 #endif
@@ -321,14 +548,11 @@ static PyObject *foldcomp_compress(PyObject* /* self */, PyObject *args, PyObjec
     }
 
     std::string output;
-    int flag = encodeStructureToFoldcomp(
+    int flag = encodeStructureToFoldcompContainer(
         name, pdb_input, static_cast<size_t>(pdb_input_size), format, threshold, maxBackboneRmsdValue, output
     );
     if (flag == PARSE_PDB_NO_ATOM) {
         PyErr_SetString(FoldcompError, "No protein atoms found");
-        return NULL;
-    } else if (flag == PARSE_PDB_MULTIPLE_CHAINS) {
-        PyErr_SetString(FoldcompError, "Multiple chains found. Please provide a single chain using 'foldcomp.split_pdb_by_chain'");
         return NULL;
     } else if (flag == PARSE_PDB_INVALID_FORMAT) {
         PyErr_SetString(PyExc_ValueError, "Invalid structure input or format");
