@@ -57,6 +57,6 @@ for name, test in tests:
         test(test_config)
     except Exception as exc:
         raise RuntimeError(
-            f"Python API test {name} failed with {type(exc).__name__}"
+            f"Python API test {name} failed with {type(exc).__name__}: {exc}"
         ) from exc
 PY
