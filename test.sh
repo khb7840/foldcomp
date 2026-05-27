@@ -32,6 +32,8 @@ for entry in sys.path:
 sys.path = cleaned_paths
 
 test_path = repo_root / "test" / "test_foldcomp.py"
+if not test_path.exists():
+    raise RuntimeError(f"Python API test file not found: {test_path}")
 spec = importlib.util.spec_from_file_location("foldcomp_pytests", test_path)
 if spec is None or spec.loader is None:
     raise RuntimeError(f"Failed to load python API tests from {test_path}")
@@ -54,5 +56,7 @@ for name, test in tests:
     try:
         test(test_config)
     except Exception as exc:
-        raise RuntimeError(f"Python API test {name} failed") from exc
+        raise RuntimeError(
+            f"Python API test {name} failed with {type(exc).__name__}"
+        ) from exc
 PY
