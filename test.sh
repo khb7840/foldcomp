@@ -9,7 +9,7 @@ cmake --build build --target foldcomp
 
 ./test/run_smoke.sh ./build/foldcomp
 
-python -m pip uninstall -y foldcomp >/dev/null 2>&1 || true
+python -m pip uninstall -y foldcomp >/dev/null || true
 python -m pip install "${REPO_ROOT}[test]"
 
 REPO_ROOT="$REPO_ROOT" python - <<'PY'
@@ -39,14 +39,20 @@ if spec is None or spec.loader is None:
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
-class PytestConfig:
+class TestConfig:
     def __init__(self, rootpath: Path) -> None:
         self.rootpath = rootpath
 
-pytestconfig = PytestConfig(repo_root)
-
-module.test_decompress(pytestconfig)
-module.test_open_db_all(pytestconfig)
-module.test_open_db_ids(pytestconfig)
-module.test_open_db_str(pytestconfig)
+test_config = TestConfig(repo_root)
+tests = [
+    ("test_decompress", module.test_decompress),
+    ("test_open_db_all", module.test_open_db_all),
+    ("test_open_db_ids", module.test_open_db_ids),
+    ("test_open_db_str", module.test_open_db_str),
+]
+for name, test in tests:
+    try:
+        test(test_config)
+    except Exception as exc:
+        raise RuntimeError(f"Python API test {name} failed") from exc
 PY
