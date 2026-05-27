@@ -10,7 +10,7 @@ cmake --build build --target foldcomp
 ./test/run_smoke.sh ./build/foldcomp
 
 python -m pip uninstall -y foldcomp >/dev/null 2>&1 || true
-python -m pip install ".[test]"
+python -m pip install "${REPO_ROOT}[test]"
 
 REPO_ROOT="$REPO_ROOT" python - <<'PY'
 from __future__ import annotations
@@ -31,11 +31,10 @@ for entry in sys.path:
 
 sys.path = cleaned_paths
 
-spec = importlib.util.spec_from_file_location(
-    "foldcomp_pytests", repo_root / "test" / "test_foldcomp.py"
-)
+test_path = repo_root / "test" / "test_foldcomp.py"
+spec = importlib.util.spec_from_file_location("foldcomp_pytests", test_path)
 if spec is None or spec.loader is None:
-    raise RuntimeError("Failed to load python API tests")
+    raise RuntimeError(f"Failed to load python API tests from {test_path}")
 
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
