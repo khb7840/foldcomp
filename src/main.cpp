@@ -58,6 +58,7 @@
 #ifdef OPENMP
 #include <omp.h>
 #endif
+#include <atomic>
 
 static int use_alt_order = 0;
 static int anchor_residue_threshold = DEFAULT_ANCHOR_THRESHOLD;
@@ -325,6 +326,8 @@ int print_usage(void) {
     std::cout << "       foldcomp check <fcz>" << std::endl;
     std::cout << "       foldcomp check [-t number] <dir|tar(.gz)|db>" << std::endl;
     std::cout << "       foldcomp rmsd <pdb|cif> <pdb|cif>" << std::endl;
+    std::cout << "       foldcomp concat <db1> <db2> [<db3> ...] <output_db>" << std::endl;
+    std::cout << "       foldcomp subset <input_db> <id_list> <output_db>" << std::endl;
     std::cout << " -h, --help               print this help message" << std::endl;
     std::cout << " -v, --version            print version" << std::endl;
     std::cout << " -t, --threads            threads for (de)compression of folders/tar files [default=1]" << std::endl;
@@ -426,7 +429,9 @@ int main(int argc, char* const *argv) {
         DECOMPRESS,
         EXTRACT,
         CHECK,
-        RMSD
+        RMSD,
+        CONCAT,
+        SUBSET
     } mode = COMPRESS;
 
     // Define command line options
@@ -555,18 +560,22 @@ int main(int argc, char* const *argv) {
         mode = CHECK;
     } else if (strcmp(argv[optind], "rmsd") == 0) {
         mode = RMSD;
+    } else if (strcmp(argv[optind], "concat") == 0) {
+        mode = CONCAT;
+    } else if (strcmp(argv[optind], "subset") == 0) {
+        mode = SUBSET;
     } else {
         return print_usage();
     }
 
-    // Error if no input file given
-    if (inputExists == -1) {
+    // Error if no input file given (concat/subset handle their own arg validation)
+    if (inputExists == -1 && mode != CONCAT && mode != SUBSET) {
         std::cerr << "[Error] " << argv[optind + 1] << " does not exist." << std::endl;
         return EXIT_FAILURE;
     }
 
-    std::string input = argv[optind + 1];
-    while (input.back() == '/') {
+    std::string input = (optind + 1 < argc) ? argv[optind + 1] : "";
+    while (!input.empty() && input.back() == '/') {
         input.pop_back();
     }
     std::vector<std::string> inputs;
@@ -646,14 +655,95 @@ int main(int argc, char* const *argv) {
     if (mode == RMSD) {
         // Calculate RMSD between two PDB files
         rmsd(input, output);
+    } else if (mode == CONCAT) {
+        // Concatenate multiple DB inputs into one output DB
+        // argv: concat <db1> <db2> ... <output>
+        if ((optind + 3) > argc) {
+            std::cerr << "[Error] concat requires at least two input DBs and one output." << std::endl;
+            return print_usage();
+        }
+        std::string concat_output = argv[argc - 1];
+        std::vector<std::string> data_files, index_files;
+        for (int i = optind + 1; i < argc - 1; i++) {
+            std::string db = argv[i];
+            while (!db.empty() && db.back() == '/') db.pop_back();
+            data_files.push_back(db);
+            index_files.push_back(db + ".index");
+        }
+        std::cout << "Concatenating " << data_files.size() << " DBs into " << concat_output << std::endl;
+        if (!concat_dbs(data_files, index_files, concat_output.c_str(), (concat_output + ".index").c_str())) {
+            std::cerr << "[Error] concat failed." << std::endl;
+            return EXIT_FAILURE;
+        }
+        return EXIT_SUCCESS;
+    } else if (mode == SUBSET) {
+        // Extract a subset of entries from a DB by name list
+        // argv: subset <input_db> <id_list> <output_db>
+        if ((optind + 4) != argc) {
+            std::cerr << "[Error] subset requires: <input_db> <id_list> <output_db>" << std::endl;
+            return print_usage();
+        }
+        std::string subset_input = argv[optind + 1];
+        std::string subset_id_file = argv[optind + 2];
+        std::string subset_output = argv[optind + 3];
+
+        // Read id list (one name per line)
+        FILE* id_f = fopen(subset_id_file.c_str(), "r");
+        if (!id_f) {
+            std::cerr << "[Error] Cannot open id list: " << subset_id_file << std::endl;
+            return EXIT_FAILURE;
+        }
+        std::set<std::string> wanted_names;
+        char line_buf[4096];
+        while (fgets(line_buf, sizeof(line_buf), id_f)) {
+            std::string name(line_buf);
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r' || name.back() == ' '))
+                name.pop_back();
+            if (!name.empty()) wanted_names.insert(name);
+        }
+        fclose(id_f);
+
+        void* reader = make_reader(subset_input.c_str(), (subset_input + ".index").c_str(),
+                                   DB_READER_USE_DATA | DB_READER_USE_LOOKUP);
+        if (!reader) {
+            std::cerr << "[Error] Cannot open input DB: " << subset_input << std::endl;
+            return EXIT_FAILURE;
+        }
+        void* writer = make_writer(subset_output.c_str(), (subset_output + ".index").c_str());
+        if (!writer) {
+            std::cerr << "[Error] Cannot open output DB: " << subset_output << std::endl;
+            free_reader(reader);
+            return EXIT_FAILURE;
+        }
+
+        uint32_t written_key = 0;
+        int64_t total = reader_get_size(reader);
+        for (int64_t idx = 0; idx < total; idx++) {
+            uint32_t k = reader_get_key(reader, idx);
+            const char* name = reader_lookup_name_alloc(reader, k);
+            if (name && wanted_names.count(std::string(name))) {
+                const char* data = reader_get_data(reader, idx);
+                int64_t len = reader_get_length(reader, idx);
+                writer_append(writer, data, (size_t)len, written_key, name);
+                written_key++;
+            }
+            if (name) free((void*)name);
+        }
+        free_writer(writer);
+        free_reader(reader);
+        std::cout << "Wrote " << written_key << " entries to " << subset_output << std::endl;
+        return EXIT_SUCCESS;
     } else if (mode == COMPRESS) {
         // output variants
-        void* handle;
         mtar_t tar_out;
+        std::vector<void*> shard_handles; // per-thread shard writers (db_output only)
         if (save_as_tar) {
             mtar_open(&tar_out, output.c_str(), "w");
         } else if (db_output) {
-            handle = make_writer(output.c_str(), (output + ".index").c_str());
+            shard_handles.resize(num_threads, nullptr);
+            for (int t = 0; t < num_threads; t++) {
+                shard_handles[t] = make_shard_writer(output.c_str(), t);
+            }
         } else if (!isSingleFileInput) {
             struct stat st;
             if (stat(output.c_str(), &st) == -1) {
@@ -679,7 +769,7 @@ int main(int argc, char* const *argv) {
             }
         }
 
-        unsigned int key = 0;
+        std::atomic<unsigned int> key(0);
         for (size_t i = 0; i < inputs.size() + 1; i++) {
             const std::string& input = (i == inputs.size()) ? "" : inputs[i];
             Processor* processor;
@@ -875,11 +965,13 @@ int main(int argc, char* const *argv) {
                 if (db_output) {
                     std::string dbKey = baseName(filename);
                     std::replace(dbKey.begin(), dbKey.end(), '.', '_');
-#pragma omp critical
-                    {
-                        writer_append(handle, encoded.c_str(), encoded.size(), key, dbKey.c_str());
-                        key++;
-                    }
+                    unsigned int k = key.fetch_add(1);
+#ifdef OPENMP
+                    int tid = omp_get_thread_num();
+#else
+                    int tid = 0;
+#endif
+                    shard_writer_append(shard_handles[tid], encoded.c_str(), encoded.size(), k, dbKey.c_str());
                 } else if (save_as_tar) {
 #pragma omp critical
                     {
@@ -910,18 +1002,24 @@ int main(int argc, char* const *argv) {
             delete processor;
         }
         if (db_output) {
-            free_writer(handle);
+            for (int t = 0; t < num_threads; t++) {
+                flush_shard_writer(shard_handles[t]);
+            }
+            merge_shards(output.c_str(), num_threads, output.c_str(), (output + ".index").c_str());
         } else if (save_as_tar) {
             mtar_write_finalize(&tar_out);
             mtar_close(&tar_out);
         }
     } else if (mode == DECOMPRESS) {
-        void* handle;
         mtar_t tar_out;
+        std::vector<void*> shard_handles;
         if (save_as_tar) {
             mtar_open(&tar_out, output.c_str(), "w");
         } else if (db_output) {
-            handle = make_writer(output.c_str(), (output + ".index").c_str());
+            shard_handles.resize(num_threads, nullptr);
+            for (int t = 0; t < num_threads; t++) {
+                shard_handles[t] = make_shard_writer(output.c_str(), t);
+            }
         } else if (!isSingleFileInput) {
             struct stat st;
             if (stat(output.c_str(), &st) == -1) {
@@ -947,7 +1045,7 @@ int main(int argc, char* const *argv) {
             }
         }
 
-        unsigned int key = 0;
+        std::atomic<unsigned int> key(0);
         for (size_t i = 0; i < inputs.size() + 1; i++) {
             const std::string& input = (i == inputs.size()) ? "" : inputs[i];
             Processor* processor;
@@ -1095,11 +1193,13 @@ int main(int argc, char* const *argv) {
 
                 if (db_output) {
                     structureText.push_back('\0');
-#pragma omp critical
-                    {
-                        writer_append(handle, structureText.c_str(), structureText.size(), key, outputFile.c_str());
-                        key++;
-                    }
+                    unsigned int k = key.fetch_add(1);
+#ifdef OPENMP
+                    int tid = omp_get_thread_num();
+#else
+                    int tid = 0;
+#endif
+                    shard_writer_append(shard_handles[tid], structureText.c_str(), structureText.size(), k, outputFile.c_str());
                 } else if (save_as_tar) {
 #pragma omp critical
                     {
@@ -1131,18 +1231,24 @@ int main(int argc, char* const *argv) {
             delete processor;
         }
         if (db_output) {
-            free_writer(handle);
+            for (int t = 0; t < num_threads; t++) {
+                flush_shard_writer(shard_handles[t]);
+            }
+            merge_shards(output.c_str(), num_threads, output.c_str(), (output + ".index").c_str());
         } else if (save_as_tar) {
             mtar_write_finalize(&tar_out);
             mtar_close(&tar_out);
         }
     } else if (mode == EXTRACT) {
-        void* handle;
         mtar_t tar_out;
+        std::vector<void*> shard_handles;
         if (save_as_tar) {
             mtar_open(&tar_out, output.c_str(), "w");
         } else if (db_output) {
-            handle = make_writer(output.c_str(), (output + ".index").c_str());
+            shard_handles.resize(num_threads, nullptr);
+            for (int t = 0; t < num_threads; t++) {
+                shard_handles[t] = make_shard_writer(output.c_str(), t);
+            }
         } else {
             struct stat st;
             if (stat(output.c_str(), &st) == -1 && !ext_merge) {
@@ -1181,7 +1287,7 @@ int main(int argc, char* const *argv) {
             isMergedOutput = true;
         }
 
-        unsigned int key = 0;
+        std::atomic<unsigned int> key(0);
         for (size_t i = 0; i < inputs.size() + 1; i++) {
             const std::string& input = (i == inputs.size()) ? "" : inputs[i];
             Processor* processor;
@@ -1336,11 +1442,13 @@ int main(int argc, char* const *argv) {
                     }
                 } else if (db_output) {
                     extractedText.push_back('\0');
-#pragma omp critical
-                    {
-                        writer_append(handle, extractedText.c_str(), extractedText.size(), key, outputFile.c_str());
-                        key++;
-                    }
+                    unsigned int k = key.fetch_add(1);
+#ifdef OPENMP
+                    int tid = omp_get_thread_num();
+#else
+                    int tid = 0;
+#endif
+                    shard_writer_append(shard_handles[tid], extractedText.c_str(), extractedText.size(), k, outputFile.c_str());
                 } else if (save_as_tar) {
 #pragma omp critical
                     {
@@ -1367,7 +1475,10 @@ int main(int argc, char* const *argv) {
             delete processor;
         }
         if (db_output) {
-            free_writer(handle);
+            for (int t = 0; t < num_threads; t++) {
+                flush_shard_writer(shard_handles[t]);
+            }
+            merge_shards(output.c_str(), num_threads, output.c_str(), (output + ".index").c_str());
         } else if (save_as_tar) {
             mtar_write_finalize(&tar_out);
             mtar_close(&tar_out);
